@@ -1,9 +1,13 @@
 CocoModel = require './CocoModel'
 schema = require 'schemas/models/classroom.schema'
 utils = require '../core/utils'
+levelUtils = require '../core/levelUtils'
+{ findNextLevelsBySession, getLevelsDataByOriginals } = require 'ozaria/site/common/ozariaUtils'
 coursesHelper = require '../lib/coursesHelper'
 User = require 'models/User'
 Level = require 'models/Level'
+api = require 'core/api'
+ClassroomLib = require './ClassroomLib'
 classroomUtils = require 'app/lib/classroom-utils'
 
 module.exports = class Classroom extends CocoModel
@@ -71,15 +75,21 @@ module.exports = class Classroom extends CocoModel
     _.extend options, opts
     @fetch(options)
 
-  setStudentPassword: (student, password, options) ->
+  setStudentPassword: (student, password) ->
     classroomID = @.id
-    $.ajax {
-      url: "/db/classroom/#{classroomID}/members/#{student.id}/reset-password"
-      method: 'POST'
-      data: { password }
-      success: => @trigger 'save-password:success'
-      error: (response) => @trigger 'save-password:error', response.responseJSON
-    }
+    return new Promise((resolve, reject) =>
+      $.ajax {
+        url: "/db/classroom/#{classroomID}/members/#{student.id}/reset-password"
+        method: 'POST'
+        data: { password }
+        success: =>
+          @trigger 'save-password:success'
+          resolve()
+        error: (response) =>
+          @trigger 'save-password:error', response.responseJSON
+          reject(response.responseJSON)
+      }
+    )
 
   getLevels: (options={}) ->
     # options: courseID, withoutLadderLevels, projectLevels, assessmentLevels, levelsCollection
@@ -107,6 +117,29 @@ module.exports = class Classroom extends CocoModel
     if options.assessmentLevels
       levels.remove(levels.filter((level) -> not level.get('assessment')))
     return levels
+
+  getLevelsByModules: ->
+    courseModuleLevelsMap = {}
+    for course in @get('courses')
+      isCh1 = course._id == utils.courseIDs.CHAPTER_ONE
+      courseLevels = @getLevels({courseID: course._id}).models
+      courseModuleLevelsMap[course._id] = {
+        modules: levelUtils.buildLevelsListByModule(courseLevels, isCh1)
+      }
+      if capstoneLevel = courseLevels.find((l) => l.isCapstone())
+        courseModuleLevelsMap[course._id].capstone = capstoneLevel
+    return courseModuleLevelsMap
+
+  fetchIntroContentDataForLevels: (courseModuleLevelsMap) ->
+    introLevels = []
+    for course in @get('courses')
+      for moduleNum, levels of courseModuleLevelsMap[course._id].modules
+        introLevels = introLevels.concat(levels.filter((l) => l.get('introContent')))
+    api.levels.fetchIntroContent(introLevels)
+    .then (introLevelContentMap) =>
+      introLevels.forEach((l) =>
+        utils.addIntroLevelContent(l, introLevelContentMap)
+      )
 
   getLadderLevel: (courseID) ->
     Levels = require 'collections/Levels'
@@ -173,10 +206,15 @@ module.exports = class Classroom extends CocoModel
       currentLevel = courseLevels.models[currentIndex]
       currentPlaytime = levelSessionMap[currentLevel.get('original')]?.get('playtime') ? 0
       needsPractice = utils.needsPractice(currentPlaytime, currentLevel.get('practiceThresholdMinutes')) and not currentLevel.get('assessment')
-      nextIndex = utils.findNextLevel(levels, currentIndex, needsPractice)
-    nextLevel = courseLevels.models[nextIndex]
-    nextLevel = arena if levelsLeft is 0
-    nextLevel ?= _.find courseLevels.models, (level) -> not levelSessionMap[level.get('original')]?.get('state')?.complete
+      unless utils.orderedCourseIDs.includes(courseID)
+        nextIndex = utils.findNextLevel(levels, currentIndex, needsPractice)
+    if utils.orderedCourseIDs.includes(courseID)
+      nextLevelOriginal = findNextLevelsBySession(sessions, courseLevels.models)
+      nextLevel = new Level(getLevelsDataByOriginals(courseLevels.models, [nextLevelOriginal])[0])
+    else
+      nextLevel = courseLevels.models[nextIndex]
+      nextLevel = arena if levelsLeft is 0
+      nextLevel ?= _.find courseLevels.models, (level) -> not levelSessionMap[level.get('original')]?.get('state')?.complete
     if nextLevel
       nextLevelNumber = @getLevelNumber(nextLevel.get('original'), nextIndex + 1)
     [_userStarted, courseComplete, _totalComplete] = coursesHelper.hasUserCompletedCourse(userLevels, levelsInCourse)
@@ -219,6 +257,12 @@ module.exports = class Classroom extends CocoModel
 
   getSortedCourses: ->
     utils.sortCourses(@get('courses') ? [])
+
+  isStudentOnLockedCourse: (studentID, courseID) ->
+    Classroom.isStudentOnLockedCourse(@attributes, studentID, courseID)
+
+  isStudentOnLockedLevel: (studentID, courseID, levelOriginal) ->
+    Classroom.isStudentOnLockedLevel(@attributes, studentID, courseID, levelOriginal)
 
   updateCourses: (options={}) ->
     options.url = @url() + '/update-courses'
@@ -273,3 +317,7 @@ module.exports = class Classroom extends CocoModel
       return classroomUtils.getDisplayPermission('write')
     else if @hasReadPermission()
       return classroomUtils.getDisplayPermission('read')
+
+
+# Make ClassroomLib accessible as static methods.
+_.assign(Classroom, ClassroomLib.default)

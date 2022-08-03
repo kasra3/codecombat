@@ -187,26 +187,18 @@ module.exports = class LankBoss extends CocoClass
     @updateScreenReader()
 
   updateScreenReader: ->
-    if utils.isOzaria
-      @updateScreenReaderOzaria();
-    else
-      @updateScreenReaderCodeCombat()
-
-  updateScreenReaderCodeCombat: ->
-    # Testing ASCII map for screen readers
-    return unless me.get('name') is 'zersiax'  #in ['zersiax', 'Nick']
-    ascii = $('#ascii-surface')
+    return unless me.get('aceConfig')?.screenReaderMode and utils.isOzaria
     thangs = (lank.thang for lank in @lankArray)
-    grid = new Grid thangs, @world.width, @world.height, 0, 0, 0, true
-    utils.replaceText ascii, grid.toString true
-    ascii.css 'transform', 'initial'
-    fullWidth = ascii.innerWidth()
-    fullHeight = ascii.innerHeight()
-    availableWidth = ascii.parent().innerWidth()
-    availableHeight = ascii.parent().innerHeight()
-    scale = availableWidth / fullWidth
-    scale = Math.min scale, availableHeight / fullHeight
-    ascii.css 'transform', "scale(#{scale})"
+    bounds = @world.calculateSimpleMovementBounds()
+    width = Math.min bounds.right - bounds.left, Math.round(@camera.worldViewport.width)
+    height = Math.min bounds.top - bounds.bottom, Math.round(@camera.worldViewport.height)
+    left = Math.max bounds.left, Math.round(@camera.worldViewport.x)
+    bottom = Math.max bounds.bottom, Math.round(@camera.worldViewport.y - @camera.worldViewport.height)  # y is inverted
+    simpleMovementResolution = 10  # It's always 10 in Ozaria
+    padding = 0
+    rogue = true
+    simpleMovementGrid = new Grid thangs, width, height, padding, left, bottom, rogue, simpleMovementResolution
+    Backbone.Mediator.publish 'surface:update-screen-reader-map', grid: simpleMovementGrid
 
   updateScreenReaderOzaria: ->
     # Testing ASCII map for screen readers
@@ -359,8 +351,7 @@ module.exports = class LankBoss extends CocoClass
     @dragged += 1
 
   onCameraZoomUpdated: (e) ->
-    if utils.isOzaria
-      @updateScreenReader()
+    @updateScreenReader()
 
   onLankMouseUp: (e) ->
     return unless @handleEvents
